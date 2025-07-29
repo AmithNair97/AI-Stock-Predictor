@@ -1,31 +1,40 @@
 import os
-import openai
+import requests
 import yfinance as yf
 import streamlit as st
 from dotenv import load_dotenv
 import plotly.graph_objects as go
 
-# Load API Key
+# ----------------- LOAD API KEY -----------------
+
 load_dotenv()
-from openai import OpenAI
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODEL = "llama3-8b-8192"
 
-client = OpenAI()
+# ----------------- GROQ CHAT FUNCTION -----------------
 
-def ask_openai(prompt, model="gpt-3.5-turbo", temperature=0.7):
+def ask_groq(prompt, temperature=0.7):
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": [
+            {"role": "system", "content": "You are a helpful AI financial advisor."},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": temperature
+    }
+
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": "You are a helpful AI financial advisor."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=temperature
-        )
-        return response.choices[0].message.content
+        response = requests.post(GROQ_API_URL, headers=headers, json=payload)
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
     except Exception as e:
-        return f"OpenAI Error: {str(e)}"
-
-        return f"Error: {str(e)}"
+        return f"Groq API Error: {str(e)}"
 
 # ----------------- STOCK HELPERS -----------------
 
@@ -56,13 +65,13 @@ def get_company_news(symbol):
     stock = yf.Ticker(symbol)
     return stock.news[:5] if hasattr(stock, "news") else []
 
-# ----------------- ANALYSIS LAYERS -----------------
+# ----------------- AI LOGIC LAYERS -----------------
 
 def get_market_analysis(symbols):
     data = compare_stocks(symbols)
     if not data:
         return "No valid stock data found."
-    return ask_openai(f"Compare these stock performances: {data}")
+    return ask_groq(f"Compare these stock performances over the last 6 months: {data}")
 
 def get_company_analysis(symbol):
     info = get_company_info(symbol)
@@ -75,7 +84,7 @@ def get_company_analysis(symbol):
         f"Summary: {info['summary']}\n"
         f"Recent News: {news}"
     )
-    return ask_openai(prompt)
+    return ask_groq(prompt)
 
 def get_stock_recommendations(symbols):
     analysis = get_market_analysis(symbols)
@@ -85,7 +94,7 @@ def get_stock_recommendations(symbols):
     And the following company data: {company_data}
     Which stocks would you recommend to invest in and why?
     """
-    return ask_openai(prompt)
+    return ask_groq(prompt)
 
 def get_final_report(symbols):
     market = get_market_analysis(symbols)
@@ -103,38 +112,78 @@ def get_final_report(symbols):
 
     Now, generate a complete investment report including performance, fundamentals, and a ranked list of the top stocks.
     """
-    return ask_openai(final_prompt)
+    return ask_groq(final_prompt)
 
 # ----------------- STREAMLIT UI -----------------
 
 st.set_page_config(page_title="AI Investment Strategist", page_icon="📈", layout="wide")
 
+# Header
 st.markdown("""
-    <h1 style="text-align: center; color: #4CAF50;">📈 AI Investment Strategist</h1>
-    <h3 style="text-align: center; color: #6c757d;">Personalized investment reports using AI & real stock data</h3>
+    <div style="text-align: center;">
+        <h1 style="color:#4CAF50;">📈 AI Investment Strategist</h1>
+        <h4 style="color:#6c757d;">Personalized investment reports using AI & real stock data (Groq)</h4>
+    </div>
 """, unsafe_allow_html=True)
 
-st.sidebar.markdown("## 🧠 Enter Stock Symbols (comma separated)")
+# Sidebar Input
+st.sidebar.markdown("## 🧠 Enter Stock Symbols")
 input_symbols = st.sidebar.text_input("Example: AAPL, TSLA, GOOG", "AAPL, TSLA, GOOG")
-api_check = os.getenv("OPENAI_API_KEY")
-symbols = [s.strip().upper() for s in input_symbols.split(",")]
+api_check = os.getenv("GROQ_API_KEY")
+symbols = [s.strip().upper() for s in input_symbols.split(",") if s.strip()]
+generate = st.sidebar.button("🚀 Generate AI Investment Report")
 
-if st.sidebar.button("🧠 Generate AI Investment Report"):
+if generate:
     if not api_check:
-        st.sidebar.warning("No API key detected in `.env` file.")
+        st.sidebar.error("❌ No API key detected in `.env` file.")
     elif not symbols:
-        st.sidebar.warning("Please enter at least one stock symbol.")
+        st.sidebar.error("⚠️ Please enter at least one valid stock symbol.")
     else:
-        with st.spinner("Analyzing market and company fundamentals..."):
+        with st.spinner("🔍 Groq AI is analyzing market fundamentals..."):
             report = get_final_report(symbols)
-        st.subheader("📊 Final Investment Report")
+
+        st.success("✅ Report Generated Successfully!")
+        st.balloons()
+
+        # Display Final Report
+        st.markdown("## 📊 Final Investment Report")
         st.markdown(report)
 
+        # Download Option
+        st.download_button(
+            label="📥 Download Report",
+            data=report,
+            file_name="investment_report.txt",
+            mime="text/plain"
+        )
+
+        # Stock Price Comparison Chart
         st.markdown("---")
-        st.markdown("### 📈 Stock Price Comparison (Last 6 Months)")
+        st.markdown("## 📈 Stock Price Comparison (Last 6 Months)")
+
         df = yf.download(symbols, period="6mo")['Close']
-        fig = go.Figure()
-        for symbol in symbols:
-            fig.add_trace(go.Scatter(x=df.index, y=df[symbol], mode='lines', name=symbol))
-        fig.update_layout(template="plotly_dark", xaxis_title="Date", yaxis_title="Price (USD)")
-        st.plotly_chart(fig)
+
+        if df.empty:
+            st.warning("No historical data available for the selected stocks.")
+        else:
+            fig = go.Figure()
+            for symbol in symbols:
+                fig.add_trace(go.Scatter(x=df.index, y=df[symbol], mode='lines', name=symbol))
+            fig.update_layout(
+                template="plotly_white",
+                xaxis_title="Date",
+                yaxis_title="Price (USD)",
+                legend_title="Stock Symbol",
+                hovermode="x unified",
+                margin=dict(t=40, b=40)
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Relative Return Ranking
+            returns = df.pct_change().sum().sort_values(ascending=False)
+            st.markdown("### 📉 Relative 6-Month Performance Ranking")
+            st.dataframe(returns.to_frame("Return %").style.format("{:.2%}"))
+
+            # Expandable Raw Data Viewer
+            with st.expander("🔍 View Raw Price Data"):
+                st.dataframe(df.style.format("${:.2f}"))
